@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Temp Mail - Auto OTP Alert</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:#1f2326;--accent:#06c08b;
+      font-family:'Space Mono',monospace;
+    }
+    body{margin:0;background:#f5f5f5;color:#222}
+    .hero{background:var(--bg);color:#fff;text-align:center;padding:30px 16px}
+    .email{background:rgba(255,255,255,0.08);padding:10px 20px;border-radius:40px;display:inline-block;margin:10px 0}
+    .btn{padding:8px 14px;border-radius:30px;margin:4px;cursor:pointer;display:inline-block}
+    .btn.accent{background:var(--accent);color:#fff}
+    .btn.ghost{background:rgba(255,255,255,0.2);color:#fff}
+    .inbox{max-width:600px;margin:20px auto;background:#fff;border-radius:12px;padding:18px;box-shadow:0 4px 10px rgba(0,0,0,0.1)}
+    .msg{border-bottom:1px solid #eee;padding:10px;cursor:pointer}
+    .msg:hover{background:#f8f8f8}
+    .empty{color:#777;text-align:center;padding:16px}
+    .otp-highlight{color:var(--accent);font-weight:bold;font-size:1.1em}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center}
+    .modal.show{display:flex}
+    .modal-card{background:#fff;padding:20px;border-radius:10px;max-width:600px;width:90%;max-height:80vh;overflow:auto}
+  </style>
+</head>
+<body>
+
+<div class="hero">
+  <h2>Your Temporary Email</h2>
+  <div class="email" id="emailAddress">Generating...</div><br>
+  <span class="btn accent" id="copyBtn">Copy</span>
+  <span class="btn ghost" id="newBtn">New</span>
+</div>
+
+<div class="inbox">
+  <h3>Inbox</h3>
+  <div id="inboxList" class="empty">Loading…</div>
+  <div style="text-align:center;margin-top:10px">
+    <span class="btn" id="refreshBtn">Refresh</span>
+  </div>
+</div>
+
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <h3 id="msgSubj">Subject</h3>
+    <div id="msgFrom" style="color:#666;font-size:13px;margin-bottom:8px"></div>
+    <div id="msgBody" style="white-space:pre-wrap"></div>
+    <div style="text-align:right;margin-top:10px">
+      <span class="btn accent" id="closeModal">Close</span>
+    </div>
+  </div>
+</div>
+
+<audio id="ding" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" preload="auto"></audio>
+
+<script>
+const API='https://api.mail.tm';
+let token=null, address=null, lastMessageCount=0;
+
+// --- CREATE NEW ACCOUNT ---
+async function newAccount(){
+  document.getElementById('emailAddress').textContent='Generating...';
+  const random=Math.random().toString(36).substring(2,10);
+  const domainData=await fetch(`${API}/domains`).then(r=>r.json());
+  const domain=domainData['hydra:member'][0].domain;
+  address=`${random}@${domain}`;
+  const password=random+Math.random().toString(36).substring(2,8);
+
+  await fetch(`${API}/accounts`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({address,password})
+  });
+
+  const auth=await fetch(`${API}/token`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({address,password})
+  }).then(r=>r.json());
+
+  token=auth.token;
+  document.getElementById('emailAddress').textContent=address;
+  refreshInbox();
+}
+
+// --- OTP DETECTION ---
+function extractOTP(text){
+  const match=text?.match(/\b\d{4,8}\b/);
+  return match?match[0]:null;
+}
+
+// --- REFRESH INBOX ---
+async function refreshInbox(){
+  if(!token) return;
+  const listEl=document.getElementById('inboxList');
+  const data=await fetch(`${API}/messages`,{
+    headers:{Authorization:`Bearer ${token}`}
+  }).then(r=>r.json());
+  const msgs=data['hydra:member'];
+  
+  if(!msgs.length){
+    listEl.className='empty';
+    listEl.textContent='Inbox empty';
+    return;
+  }
+
+  // sound alert for new mail
+  if(msgs.length > lastMessageCount){
+    document.getElementById('ding').play();
+  }
+  lastMessageCount = msgs.length;
+
+  listEl.className='';
+  listEl.innerHTML='';
+  for(const m of msgs){
+    const fullMsg=await fetch(`${API}/messages/${m.id}`,{
+      headers:{Authorization:`Bearer ${token}`}
+    }).then(r=>r.json());
+    const otp=extractOTP(fullMsg.text||m.subject);
+    const div=document.createElement('div');
+    div.className='msg';
+    div.innerHTML=`
+      <b>${m.subject||'(no subject)'}</b><br>
+      <small>${m.from?.address}</small>
+      ${otp?`<div>OTP: <span class='otp-highlight'>${otp}</span></div>`:''}
+    `;
+    div.onclick=()=>openMessage(m.id);
+    listEl.appendChild(div);
+  }
+}
+
+// --- OPEN MESSAGE ---
+async function openMessage(mid){
+  const m=await fetch(`${API}/messages/${mid}`,{
+    headers:{Authorization:`Bearer ${token}`}
+  }).then(r=>r.json());
+  document.getElementById('msgSubj').textContent=m.subject||'(no subject)';
+  document.getElementById('msgFrom').textContent='From: '+m.from?.address;
+  document.getElementById('msgBody').textContent=m.text||'(empty)';
+  document.getElementById('modal').classList.add('show');
+}
+
+// --- UI EVENTS ---
+document.getElementById('copyBtn').onclick=()=>{
+  navigator.clipboard.writeText(address);
+  alert('Copied: '+address);
+};
+document.getElementById('refreshBtn').onclick=refreshInbox;
+document.getElementById('newBtn').onclick=newAccount;
+document.getElementById('closeModal').onclick=()=>document.getElementById('modal').classList.remove('show');
+
+// --- AUTO REFRESH every 10 seconds ---
+setInterval(refreshInbox,10000);
+
+// --- INIT ---
+newAccount();
+</script>
+
+</body>
+</html>
+<script type="text/javascript">
+    atOptions = {
+        'key' : 'f613e4be1f058f5bb29c724dbe802e54',
+        'format' : 'iframe',
+        'height' : 60,
+        'width' : 468,
+        'params' : {}
+    };
+</script>
+<script type="text/javascript" src="//www.highperformanceformat.com/f613e4be1f058f5bb29c724dbe802e54/invoke.js"></script>
